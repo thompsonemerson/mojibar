@@ -1,10 +1,17 @@
+var { app, ipcMain, globalShortcut, Menu } = require('electron')
+var isMac = /darwin/.test(process.platform)
 var menubar = require('menubar')
-var app = require('electron').app
-var ipc = require('electron').ipcMain
-var globalShortcut = require('electron').globalShortcut
-var mb = menubar({ dir: __dirname + '/app', width: 440, height: 270, icon: __dirname + '/app/Icon-Template.png', preloadWindow: true, windowPosition: 'topRight' })
-var Menu = require('electron').Menu
 var isDev = require('electron-is-dev')
+var path = require('path')
+var mb = menubar({
+  dir: path.join(__dirname, '/app'),
+  width: 440,
+  height: 330,
+  icon: path.join(__dirname, '/app/Icon-Template.png'),
+  preloadWindow: true,
+  windowPosition: 'topRight',
+  alwaysOnTop: true
+})
 
 mb.on('show', function () {
   mb.window.webContents.send('show')
@@ -19,12 +26,18 @@ mb.app.on('activate', function () {
 })
 
 // when receive the abort message, close the app
-ipc.on('abort', function () {
-  mb.hideWindow()
+ipcMain.on('abort', function () {
+  if (isMac) {
+    mb.app.hide()
+  } else {
+    // Windows and Linux
+    mb.window.blur()
+    mb.hideWindow()
+  }
 })
 
 // update shortcuts when preferences change
-ipc.on('update-preference', function (evt, pref, initialization) {
+ipcMain.on('update-preference', function (evt, pref, initialization) {
   registerShortcut(pref['open-window-shortcut'], initialization)
 
   // Make packaged app (not dev app) start at login
@@ -42,32 +55,32 @@ var template = [
     submenu: [
       {
         label: 'Undo',
-        accelerator: 'Command+Z',
+        accelerator: 'CommandOrControl+Z',
         selector: 'undo:'
       },
       {
         label: 'Redo',
-        accelerator: 'Shift+Command+Z',
+        accelerator: 'Shift+CommandOrControl+Z',
         selector: 'redo:'
       },
       {
         label: 'Cut',
-        accelerator: 'Command+X',
+        accelerator: 'CommandOrControl+X',
         selector: 'cut:'
       },
       {
         label: 'Copy',
-        accelerator: 'Command+C',
+        accelerator: 'CommandOrControl+C',
         selector: 'copy:'
       },
       {
         label: 'Paste',
-        accelerator: 'Command+V',
+        accelerator: 'CommandOrControl+V',
         selector: 'paste:'
       },
       {
         label: 'Select All',
-        accelerator: 'Command+A',
+        accelerator: 'CommandOrControl+A',
         selector: 'selectAll:'
       },
       {
@@ -77,17 +90,17 @@ var template = [
       },
       {
         label: 'Preference',
-        accelerator: 'Command+,',
+        accelerator: 'CommandOrControl+,',
         click: function () { mb.window.webContents.send('open-preference') }
       },
       {
         label: 'Quit App',
-        accelerator: 'Command+Q',
+        accelerator: 'CommandOrControl+Q',
         selector: 'terminate:'
       },
       {
         label: 'Toggle DevTools',
-        accelerator: 'Alt+Command+I',
+        accelerator: 'Alt+CommandOrControl+I',
         click: function () { mb.window.toggleDevTools() }
       }
     ]
@@ -98,6 +111,10 @@ mb.on('ready', function ready () {
   // Build default menu for text editing and devtools. (gone since electron 0.25.2)
   var menu = Menu.buildFromTemplate(template)
   Menu.setApplicationMenu(menu)
+
+  mb.window.on('hide', function () {
+    mb.window.webContents.send('fetch')
+  })
 })
 
 // Register a shortcut listener.
@@ -106,7 +123,12 @@ var registerShortcut = function (keybinding, initialization) {
 
   try {
     var ret = globalShortcut.register(keybinding, function () {
-      mb.window.isVisible() ? mb.hideWindow() : mb.showWindow()
+      if (mb.window.isVisible()) {
+        return mb.hideWindow()
+      }
+
+      mb.showWindow()
+      mb.window.focus()
     })
   } catch (err) {
     mb.window.webContents.send('preference-updated', false, initialization)

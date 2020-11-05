@@ -1,5 +1,7 @@
-var emojilib = require('emojilib').lib
-var emojikeys = require('emojilib').ordered
+/* global localStorage, fetch */
+var emojilib = JSON.parse(localStorage.getItem('emojilib')) || require('emojilib').lib
+var emojikeys = JSON.parse(localStorage.getItem('emojikeys')) || require('emojilib').ordered
+var modifiers = require('emojilib').fitzpatrick_scale_modifiers
 var clipboard = require('electron').clipboard
 var ipc = require('electron').ipcRenderer
 var index = buildIndex()
@@ -7,11 +9,41 @@ var indexKeys = Object.keys(index)
 var emojikeyIndexTable = buildEmojikeyIndexTable()
 var searching = false
 var searchInput = document.querySelector('.js-search')
+var preference = JSON.parse(localStorage.getItem('preference'))
 var directions = {
   37: 'left',
   38: 'up',
   39: 'right',
   40: 'down'
+}
+
+function fetchAndUpdateLocalCache () {
+  if (!navigator.onLine) return
+  var expireTime = localStorage.getItem('emojilibExpireTime')
+  if (expireTime && Number(expireTime) > new Date().getTime()) return
+  var version = '^2.0.0'
+  var emojilibLib = `https://unpkg.com/emojilib@${version}/emojis.json`
+  var emojilibOrdered = `https://unpkg.com/emojilib@${version}/ordered.json`
+
+  fetch(emojilibLib).then(function (res) { return checkIfNewVersion(res) }).then(function (newData) {
+    // Fetch only once per day
+    localStorage.setItem('emojilibExpireTime', new Date().getTime() + 1000 * 60 * 60 * 24)
+    if (!newData) return
+    localStorage.setItem('emojilib', JSON.stringify(newData))
+
+    fetch(emojilibOrdered).then(function (res) { return res.json() }).then(function (newData) {
+      localStorage.setItem('emojikeys', JSON.stringify(newData))
+      window.location.reload()
+    })
+  })
+
+  function checkIfNewVersion (res) {
+    var fetchedVersion = res.url.match(/@([\d.]+)/)[1]
+    if (fetchedVersion !== localStorage.getItem('emojilibVersion')) {
+      localStorage.setItem('emojilibVersion', fetchedVersion)
+      return res.json()
+    }
+  }
 }
 
 searchInput.dataset.isSearchInput = true
@@ -23,6 +55,10 @@ searchInput.addEventListener('input', function () {
 
 ipc.on('show', function (event, message) {
   searchInput.focus()
+})
+
+ipc.on('fetch', function (event, message) {
+  fetchAndUpdateLocalCache()
 })
 
 document.addEventListener('mousewheel', function (e) {
@@ -139,8 +175,10 @@ function search (query) {
 function renderResults (emojiNameArray, containerElement) {
   containerElement.innerHTML = ''
   var fragment = document.createDocumentFragment()
+  var modifierValue = preference['skin-tone-modifier']
+  var modifier = modifiers.indexOf(modifierValue) >= 0 ? modifierValue : null
   emojiNameArray.forEach(function (name) {
-    var unicode = (emojilib[name]['char'] || '--')
+    var unicode = addModifier(emojilib[name], modifier) || '--'
     var resultElement = document.createElement('button')
     resultElement.type = 'button'
     resultElement.className = 'emoji'
@@ -180,8 +218,14 @@ function buildIndex () {
 }
 
 function isWord (charCode) {
-  var word = String.fromCharCode(charCode).match(/\w/)
-  return Boolean(word) ? word : false
+  return String.fromCharCode(charCode).match(/\w/)
+}
+
+// Insert modifier in front of zwj
+function addModifier (emoji, modifier) {
+  if (!modifier || !emoji['fitzpatrick_scale']) return emoji['char']
+  var zwj = new RegExp('‍', 'g')
+  return emoji['char'].match(zwj) ? emoji['char'].replace(zwj, modifier + '‍') : emoji['char'] + modifier
 }
 
 function jumpto (destination) {
@@ -199,13 +243,17 @@ function jumpto (destination) {
     newTarget = nodeIndex + resultPerRow
   } else if (destination === 'left') {
     if ((nodeIndex + 1) % resultPerRow === 1) {
-      newTarget = nodeIndex + (resultPerRow - 1)
+      // Wrap to previous row.
+      newTarget = nodeIndex + (resultPerRow - 1) // Adjust to last column.
+      newTarget -= resultPerRow // Up one row.
     } else {
       newTarget = nodeIndex - 1
     }
   } else if (destination === 'right') {
     if ((nodeIndex + 1) % resultPerRow === 0) {
-      newTarget = nodeIndex - (resultPerRow - 1)
+      // Wrap to next row.
+      newTarget = nodeIndex - (resultPerRow - 1) // Adjust to first column.
+      newTarget += resultPerRow // Down one row.
     } else {
       newTarget = nodeIndex + 1
     }
@@ -215,10 +263,20 @@ function jumpto (destination) {
     newTarget = nodeIndex - resultPerRow * (resultPerCol - 1 || 1)
   }
 
-  if (newTarget < 0) newTarget = 0
+  if (newTarget < 0) {
+    // Allow jump back up to search field IF already at first item.
+    if (nodeIndex === 0) {
+    // Purposefully mismatch so we focus on input instead.
+      newTarget = -1
+    } else {
+      newTarget = 0
+    }
+  }
   if (newTarget >= all.length - 1) newTarget = all.length - 1
   if (all[newTarget]) {
     all[newTarget].focus()
     all[newTarget].scrollIntoViewIfNeeded()
+  } else {
+    searchInput.focus()
   }
 }
